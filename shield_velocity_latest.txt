@@ -1,0 +1,159 @@
+╔══════════════════════════════════════════════════════════════╗
+  Shield Team — Biweekly Productivity & Velocity Report
+  Sprint: Shield S195  |  Generated: 2026-05-29 19:24 UTC
+  3 DAYS LEFT  |  Total Issues: 112
+╚══════════════════════════════════════════════════════════════╝
+
+══════════════════════════════════════════════════════════════════
+  PER-ASSIGNEE BREAKDOWN
+══════════════════════════════════════════════════════════════════
+
+  ▸ Rahul Katikineni
+    Issues   : 30 total | 23 done | 3 active | 4 blocked/open
+    Points   : 0/0 completed (77% done rate)
+    Statuses : Closed:6, Done:14, In Progress:2, Open:3, PR Review:1, Rejected:1, Resolved:3
+
+  ▸ Baishali Ghosh
+    Issues   : 18 total | 10 done | 2 active | 6 blocked/open
+    Points   : 0/0 completed (56% done rate)
+    Statuses : Done:10, Open:5, PR Review:2, Rejected:1
+
+  ▸ Sanjeet Manna
+    Issues   : 16 total | 8 done | 3 active | 5 blocked/open
+    Points   : 0/0 completed (50% done rate)
+    Statuses : Done:7, In Progress:1, Open:2, PR Review:2, Pending:2, Rejected:1, Resolved:1
+
+  ▸ Charan Karpuram
+    Issues   : 12 total | 7 done | 3 active | 2 blocked/open
+    Points   : 0/0 completed (58% done rate)
+    Statuses : Done:7, In Progress:1, PR Review:2, Pending:1, Rejected:1
+
+  ▸ Rohit Sharma
+    Issues   : 9 total | 4 done | 2 active | 3 blocked/open
+    Points   : 0/0 completed (44% done rate)
+    Statuses : Closed:1, Done:3, In Progress:1, Open:2, PR Review:1, Pending:1
+
+  ▸ Ojal Kumar
+    Issues   : 5 total | 3 done | 1 active | 1 blocked/open
+    Points   : 0/0 completed (60% done rate)
+    Statuses : Done:2, Open:1, PR Review:1, Resolved:1
+
+  ▸ Mukund Bayyaram
+    Issues   : 5 total | 2 done | 2 active | 1 blocked/open
+    Points   : 0/0 completed (40% done rate)
+    Statuses : Done:2, In Progress:2, Open:1
+
+  ▸ Chandu Sai Lella
+    Issues   : 4 total | 2 done | 1 active | 1 blocked/open
+    Points   : 0/0 completed (50% done rate)
+    Statuses : Done:2, Open:1, PR Review:1
+
+  ▸ Shyam Gupta
+    Issues   : 3 total | 3 done | 0 active | 0 blocked/open
+    Points   : 0/0 completed (100% done rate)
+    Statuses : Done:3
+
+  ▸ MUKESH KUMAR
+    Issues   : 1 total | 1 done | 0 active | 0 blocked/open
+    Points   : 0/0 completed (100% done rate)
+    Statuses : Resolved:1
+
+  ▸ Pritish Saraf
+    Issues   : 1 total | 0 done | 1 active | 0 blocked/open
+    Points   : 0/0 completed (0% done rate)
+    Statuses : In Progress:1
+
+  ▸ Giri Nellore
+    Issues   : 1 total | 0 done | 0 active | 1 blocked/open
+    Points   : 0/0 completed (0% done rate)
+    Statuses : Open:1
+
+  ▸ Ben Horblit
+    Issues   : 1 total | 1 done | 0 active | 0 blocked/open
+    Points   : 0/0 completed (100% done rate)
+    Statuses : Merged:1
+
+  ⚠️  Unassigned
+    Issues   : 6 total | Open:4, PR Review:2
+    Keys     : ENGCE-56102, ENGCE-56103, ENGCE-57222, ENGCE-57778, ENGCE-57947, ENGCE-58328
+
+══════════════════════════════════════════════════════════════════
+  TEAM VELOCITY SUMMARY
+══════════════════════════════════════════════════════════════════
+
+  Issues Done      : 64 / 112
+  In Progress      : 20
+  Blocked / Open   : 28
+  Story Points Done: 0 / 0
+  Sprint Completion: 57%
+
+══════════════════════════════════════════════════════════════════
+  LONGEST AGED / STUCK TICKETS  (Top 8)
+══════════════════════════════════════════════════════════════════
+
+  🕐 ENGCE-55623  [Open]  — Age: 95d | In status: 45d | Last touched: 15d ago
+     Assignee : Ojal Kumar
+     Summary  : Box OAuth scopes - should show or not ?
+     Points   : ?
+     Last comment (63d ago) by Automation for Jira:
+       "Hi ,Please set the Story Points value for the issue."
+
+
+  🕐 ENGCE-56086  [Open]  — Age: 80d | In status: 40d | Last touched: 2d ago
+     Assignee : Chandu Sai Lella
+     Summary  : [Design] Uipcli x IS Integration Flow Review
+     Points   : ?
+     Last comment (55d ago) by Automation for Jira:
+       "Hi ,Please set the Story Points value for the issue."
+
+
+  🕐 ENGCE-57697  [PR Review]  — Age: 22d | In status: 21d | Last touched: 11d ago
+     Assignee : Ojal Kumar
+     Summary  : [RPA] Trigger activities: Array of enum filters broken
+     Points   : ?
+     Last comment (22d ago) by Automation for Jira:
+       "Hi [~accountid:],Please set the Story Points value for the issue."
+
+
+  🕐 ENGCE-57941  [PR Review]  — Age: 15d | In status: 14d | Last touched: 14d ago
+     Assignee : Baishali Ghosh
+     Summary  : [POC] Per-PR alpha package + StudioWeb E2E validation with Playwright
+     Points   : ?
+     Last comment (never) by —:
+       "(no comments)"
+
+
+  🕐 ENGCE-57947  [PR Review]  — Age: 14d | In status: 14d | Last touched: 14d ago
+     Assignee : Unassigned
+     Summary  : studio desktop local E2E
+     Points   : ?
+     Last comment (never) by —:
+       "(no comments)"
+
+
+  🕐 ENGCE-57946  [PR Review]  — Age: 14d | In status: 11d | Last touched: 10d ago
+     Assignee : Baishali Ghosh
+     Summary  : sw-feat-test-from-local
+     Points   : ?
+     Last comment (never) by —:
+       "(no comments)"
+
+
+  🕐 ENGCE-57721  [Pending]  — Age: 21d | In status: 10d | Last touched: 3d ago
+     Assignee : Sanjeet Manna
+     Summary  : [Flow] [Coding Agent] Outlook email-received trigger: folder picker not surfacin
+     Points   : ?
+     Last comment (4d ago) by Automation for Jira:
+       "The linked issue -  has been resolved"
+
+
+  🕐 ENGCE-58089  [In Progress]  — Age: 10d | In status: 10d | Last touched: 3d ago
+     Assignee : Mukund Bayyaram
+     Summary  : Accuracy analysis of metadata vs no metadata analysis for top 30 connectors's co
+     Points   : ?
+     Last comment (3d ago) by Automation for Jira:
+       "The linked issue -  has been resolved"
+
+══════════════════════════════════════════════════════════════════
+  Report complete — 2026-05-29 19:24 UTC
+══════════════════════════════════════════════════════════════════
