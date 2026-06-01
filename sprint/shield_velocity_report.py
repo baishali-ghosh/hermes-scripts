@@ -11,10 +11,21 @@ import os
 from datetime import datetime, timezone
 from collections import defaultdict
 
+def _get_jira_token():
+    """Load Jira token from Windows Credential Manager, fallback to env var."""
+    try:
+        import keyring
+        token = keyring.get_password("hermes", "JIRA_API_TOKEN")
+        if token:
+            return token
+    except Exception:
+        pass
+    return os.environ.get("JIRA_API_TOKEN", "")
+
 # ── Config ────────────────────────────────────────────────────────────────────
 JIRA_BASE    = "https://uipath.atlassian.net"
 JIRA_USER    = "baishali.ghosh@uipath.com"
-JIRA_TOKEN   = os.environ.get("JIRA_API_TOKEN", "")
+JIRA_TOKEN=_get_j...()
 BOARD_ID     = 2456
 PROJECT_KEY  = "ENGCE"
 
