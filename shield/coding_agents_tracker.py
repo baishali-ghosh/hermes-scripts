@@ -25,7 +25,7 @@ from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────────────
 SOURCE_CHANNEL = "C0A2T23NJ59"   # #team-coding-agents
-CANVAS_ID      = "F0B43LH0MDM"   # Shield team canvas
+DM_CHANNEL     = "D08F22N8Q5B"   # Baishali DM with bot
 STATE_FILE     = Path(__file__).parent / "coding_agents_tracker_state.json"
 LOOKBACK_HOURS = 25              # slight overlap to avoid missing anything
 
@@ -213,48 +213,32 @@ def main():
         print("")  # nothing worth reporting
         return
 
-    # Build canvas section
+    # Build DM message
     today = datetime.now().strftime("%d %b %Y")
-    canvas_lines = [f"\n## #team-coding-agents Updates — {today}\n"]
+    lines = [
+        f"📡 *#team-coding-agents — {len(important)} important update(s)* | {today}",
+        "",
+    ]
 
     for item in important:
         label_str = " · ".join(item["labels"])
-        summary   = item["text"][:280]
-        link_str  = " | ".join(f"[link]({l})" for l in item["links"]) if item["links"] else ""
+        lines.append(f"*{label_str}*")
+        lines.append(f"> {item['text'][:280]}{'...' if len(item['text']) > 280 else ''}")
+        link_extras = ""
+        if item["links"]:
+            link_extras = " · " + " ".join(f"<{l}|link>" for l in item["links"])
+        lines.append(f"<{item['permalink']}|→ thread> · {item['dt']}{link_extras}")
+        if item["replies"]:
+            lines.append(f"_{item['replies']} replies_")
+        lines.append("")
 
-        canvas_lines.append(
-            f"**{label_str}** · {item['dt']}\n"
-            f"{summary}{'...' if len(item['text']) > 280 else ''}\n"
-            f"{'Links: ' + link_str if link_str else ''} "
-            f"[Slack thread]({item['permalink']})"
-            f"{' · ' + str(item['replies']) + ' replies' if item['replies'] else ''}\n"
-        )
+    result = slack_post(token, DM_CHANNEL, "\n".join(lines))
 
-    canvas_md = "\n---\n".join(canvas_lines)
-
-    # Try to append to canvas
-    result = canvas_append(token, CANVAS_ID, canvas_md)
-    canvas_ok = result.get("ok")
-
-    print(
-        f"✅ {len(important)} important update(s) from #team-coding-agents | "
-        f"canvas={'updated' if canvas_ok else 'needs access (error: ' + result.get('error','?') + ')'}"
-    )
-
-    if not canvas_ok:
-        # Fallback: log to stdout so cron delivers summary to chat
-        lines = [
-            f"📡 *#team-coding-agents — {len(important)} important update(s)* | {today}",
-            f"_(Canvas update pending — bot needs edit access to <https://uipath.enterprise.slack.com/docs/T025L55FT/{CANVAS_ID}|canvas>)_",
-            "",
-        ]
-        for item in important:
-            label_str = " · ".join(item["labels"])
-            lines.append(f"*{label_str}*")
-            lines.append(f"> {item['text'][:200]}")
-            lines.append(f"<{item['permalink']}|→ thread> · {item['dt']}")
-            lines.append("")
-        print("\n".join(lines))
+    if result.get("ok"):
+        print(f"✅ {len(important)} update(s) from #team-coding-agents → DM")
+    else:
+        print(f"❌ DM failed: {result.get('error')}")
+        print("\n".join(lines))  # fallback to stdout
 
 
 if __name__ == "__main__":
