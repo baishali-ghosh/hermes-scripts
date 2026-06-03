@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+shield/shield_deprecation_state.json
