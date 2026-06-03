@@ -4,3 +4,4 @@ __pycache__/
 *.pyo
 .DS_Store
 shield/shield_deprecation_state.json
+shield/coding_agents_tracker_state.json
