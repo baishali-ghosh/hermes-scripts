@@ -406,12 +406,32 @@ def format_message(day, week, day_in_week, title, lesson):
 *Keep going! Consistency beats intensity. నువ్వు చేయగలవు! (You can do it!)*"""
     return msg
 
+def save_lesson_log(day, week, day_in_week, title, lesson, msg):
+    """Append today's lesson to a markdown log file for git history."""
+    log_dir = Path(__file__).parent / "lessons"
+    log_dir.mkdir(exist_ok=True)
+    date_str = datetime.date.today().isoformat()
+    log_file = log_dir / f"{date_str}.md"
+    content = f"""# Telugu Lesson — Day {day} ({date_str})
+
+**Week {week} · Lesson {day_in_week}/5 · {title}**
+
+- **Telugu:** {lesson['phrase']}
+- **Speak:** /{lesson['translit']}/
+- **Meaning:** {lesson['meaning']}
+- **Example:** {lesson['example']}
+- **Tip:** {lesson['tip']}
+"""
+    log_file.write_text(content, encoding="utf-8")
+
 def main():
     state = load_state()
     day = state["day"]
     week, day_in_week, title, lesson = get_lesson(day)
     msg = format_message(day, week, day_in_week, title, lesson)
     print(msg)
+    # Save lesson log for git
+    save_lesson_log(day, week, day_in_week, title, lesson, msg)
     # Advance to next day
     state["day"] = day + 1
     save_state(state)
