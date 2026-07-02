@@ -5,3 +5,4 @@ __pycache__/
 .DS_Store
 shield/shield_deprecation_state.json
 shield/coding_agents_tracker_state.json
+sprint/shield_velocity_latest.txt

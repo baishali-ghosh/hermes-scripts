@@ -3,6 +3,13 @@
 Shield Team — Biweekly Productivity & Velocity Report
 Tracks: per-assignee velocity, status breakdown, story points, aged tickets
 Jira: project=ENGCE, board=2456, org=uipath.atlassian.net
+
+Auto-sweep actions:
+  - Aged & stalled tickets (stuck >= AGED_STUCK_THRESHOLD days): adds Baishali as
+    watcher (CC) and posts a reprioritization nudge comment.
+  - Tickets missing story points: posts a comment @mentioning the assignee.
+  - Both comments end with "— Auto sweep by Claude".
+  - Skips if last comment already contains "Auto sweep by Claude" (dedup).
 """
 
 import requests
@@ -25,16 +32,21 @@ def _get_jira_token():
 # ── Config ────────────────────────────────────────────────────────────────────
 JIRA_BASE    = "https://uipath.atlassian.net"
 JIRA_USER    = "baishali.ghosh@uipath.com"
-JIRA_TOKEN=_get_j...()
+JIRA_TOKEN   = _get_jira_token()
 BOARD_ID     = 2456
 PROJECT_KEY  = "ENGCE"
+
+BAISHALI_ID  = "61289a45fc550900711d5544"   # Baishali's Jira account ID (CC / watcher)
+
+# Aged-ticket auto-sweep thresholds
+AGED_STUCK_THRESHOLD = 5    # days stuck in the same status before we flag + sweep
 
 # Statuses considered "completed"
 DONE_STATUSES   = {"Done", "Closed", "Resolved", "Merged"}
 ACTIVE_STATUSES = {"In Progress", "PR Review"}
 BLOCKED_STATUSES = {"Pending", "Open", "To Do"}
 
-auth = (JIRA_USER, JIRA_TOKEN)
+auth    = (JIRA_USER, JIRA_TOKEN)
 headers = {"Accept": "application/json"}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -46,7 +58,6 @@ def get(url, params=None):
 def parse_date(s):
     if not s:
         return None
-    # Handle both with and without microseconds
     for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
         try:
             return datetime.strptime(s[:26] + s[26:].replace(":", ""), fmt)
@@ -72,30 +83,111 @@ def days_in_status(changelog_histories, current_status):
             break
     return days_ago(last_transition)
 
+def extract_comment_text(body):
+    """Extract plain text from an Atlassian Document Format comment body."""
+    text = ""
+    if isinstance(body, dict):
+        for block in body.get("content", []):
+            for inline in block.get("content", []):
+                if inline.get("type") == "text":
+                    text += inline.get("text", "")
+    else:
+        text = str(body)
+    return text
+
 def get_last_comment(issue_key):
-    """Fetch the most recent comment on an issue."""
+    """Fetch the most recent comment on an issue.
+    Returns (author, created_dt, text, already_swept).
+    already_swept=True if the last comment contains 'Auto sweep by Claude'.
+    """
     try:
         data = get(f"{JIRA_BASE}/rest/api/3/issue/{issue_key}/comment",
                    params={"maxResults": 1, "orderBy": "-created"})
         comments = data.get("comments", [])
         if comments:
             c = comments[-1]
-            author = c.get("author", {}).get("displayName", "?")
+            author  = c.get("author", {}).get("displayName", "?")
             created = parse_date(c["created"])
-            # Extract plain text from body (Atlassian Document Format)
-            body = c.get("body", {})
-            text = ""
-            if isinstance(body, dict):
-                for block in body.get("content", []):
-                    for inline in block.get("content", []):
-                        if inline.get("type") == "text":
-                            text += inline.get("text", "")
-            else:
-                text = str(body)
-            return author, created, text[:200]
+            text    = extract_comment_text(c.get("body", {}))[:200]
+            swept   = "Auto sweep by Claude" in text
+            return author, created, text, swept
     except Exception:
         pass
-    return None, None, None
+    return None, None, "(no comments)", False
+
+def add_watcher(issue_key, account_id):
+    """Add account_id as a watcher on the issue. Returns True on success."""
+    try:
+        url = f"{JIRA_BASE}/rest/api/3/issue/{issue_key}/watchers"
+        r = requests.post(
+            url, auth=auth,
+            headers={**headers, "Content-Type": "application/json"},
+            data=json.dumps(account_id),   # body must be a JSON string, not object
+            timeout=15
+        )
+        return r.status_code in (200, 204)
+    except Exception:
+        return False
+
+def post_comment_adf(issue_key, paragraphs):
+    """Post a comment built from a list of ADF paragraph content arrays.
+    Each element of `paragraphs` is a list of ADF inline nodes.
+    Returns True on success.
+    """
+    content = [{"type": "paragraph", "content": nodes} for nodes in paragraphs]
+    body = {
+        "body": {
+            "version": 1,
+            "type": "doc",
+            "content": content
+        }
+    }
+    try:
+        url = f"{JIRA_BASE}/rest/api/3/issue/{issue_key}/comment"
+        r = requests.post(
+            url, auth=auth,
+            headers={**headers, "Content-Type": "application/json"},
+            json=body, timeout=15
+        )
+        return r.status_code in (200, 201)
+    except Exception:
+        return False
+
+def post_aged_comment(issue_key, status, in_status_days, last_touch_days):
+    """Post a reprioritization nudge on a stalled ticket."""
+    paragraphs = [
+        [
+            {"type": "text", "text":
+             f"⏰ This ticket has been in \"{status}\" status for {in_status_days} day(s)"
+             f" (last updated {last_touch_days} day(s) ago) and appears to have stalled."},
+        ],
+        [
+            {"type": "text", "text":
+             "Please check with your manager for reprioritization or provide a status update."},
+        ],
+        [
+            {"type": "text", "text": "— Auto sweep by Claude"},
+        ],
+    ]
+    return post_comment_adf(issue_key, paragraphs)
+
+def post_missing_sp_comment(issue_key, assignee_id, assignee_name):
+    """Post a story-points nudge @mentioning the assignee."""
+    paragraphs = [
+        [
+            {
+                "type": "mention",
+                "attrs": {"id": assignee_id, "text": f"@{assignee_name}"}
+            },
+            {"type": "text", "text":
+             " Please update the story points on this ticket to enable accurate"
+             " velocity calculation for the sprint."},
+        ],
+        [
+            {"type": "text", "text": "— Auto sweep by Claude"},
+        ],
+    ]
+    return post_comment_adf(issue_key, paragraphs)
 
 # ── Fetch Active Sprint ────────────────────────────────────────────────────────
 print("Fetching active sprint...")
@@ -148,24 +240,27 @@ stats = defaultdict(lambda: {
     "issues": []
 })
 
-aged_candidates = []  # (age_days, key, assignee, status, summary, days_in_current_status)
+aged_candidates  = []   # tickets not done, age > 7 days
+missing_sp_tickets = [] # non-done tickets with no story points
 
 now = datetime.now(timezone.utc)
 
 for issue in all_issues:
     f = issue["fields"]
-    key        = issue["key"]
-    assignee   = (f.get("assignee") or {}).get("displayName", "Unassigned")
-    status     = f["status"]["name"]
-    summary    = f.get("summary", "")[:80]
-    points     = f.get("customfield_10016") or 0  # story points
-    created    = parse_date(f.get("created"))
-    updated    = parse_date(f.get("updated"))
-    age_days   = days_ago(created)
-    last_touch = days_ago(updated)
+    key           = issue["key"]
+    assignee_obj  = f.get("assignee") or {}
+    assignee      = assignee_obj.get("displayName", "Unassigned")
+    assignee_id   = assignee_obj.get("accountId", "")
+    status        = f["status"]["name"]
+    summary       = f.get("summary", "")[:80]
+    points        = f.get("customfield_10016") or 0  # story points
+    created       = parse_date(f.get("created"))
+    updated       = parse_date(f.get("updated"))
+    age_days      = days_ago(created)
+    last_touch    = days_ago(updated)
 
     # Changelog for time-in-status
-    histories  = issue.get("changelog", {}).get("histories", [])
+    histories      = issue.get("changelog", {}).get("histories", [])
     in_status_days = days_in_status(histories, status)
 
     s = stats[assignee]
@@ -182,17 +277,28 @@ for issue in all_issues:
     else:
         s["blocked"] += 1
 
-    # Track aged tickets: not done, created > 7 days ago, or stuck in status > 5 days
+    # Track aged tickets: not done, created > 7 days ago
     if status not in DONE_STATUSES and age_days and age_days > 7:
         aged_candidates.append({
             "key": key,
             "assignee": assignee,
+            "assignee_id": assignee_id,
             "status": status,
             "summary": summary,
             "age_days": age_days,
             "last_touch_days": last_touch,
             "in_status_days": in_status_days or 0,
             "points": points
+        })
+
+    # Track missing story points: not done, no points set, has an assignee
+    if status not in DONE_STATUSES and not points and assignee != "Unassigned" and assignee_id:
+        missing_sp_tickets.append({
+            "key": key,
+            "assignee": assignee,
+            "assignee_id": assignee_id,
+            "status": status,
+            "summary": summary,
         })
 
 # Sort aged by how long in current status (most stuck first)
@@ -202,10 +308,56 @@ top_aged = aged_candidates[:8]
 # ── Fetch Last Comment for Top Aged Tickets ────────────────────────────────────
 print(f"Fetching comments for {len(top_aged)} aged tickets...")
 for t in top_aged:
-    author, when, text = get_last_comment(t["key"])
+    author, when, text, swept = get_last_comment(t["key"])
     t["last_comment_author"] = author
-    t["last_comment_days"] = days_ago(when) if when else None
-    t["last_comment_text"] = text or "(no comments)"
+    t["last_comment_days"]   = days_ago(when) if when else None
+    t["last_comment_text"]   = text or "(no comments)"
+    t["already_swept"]       = swept
+
+# ── Auto-Sweep: Aged / Stalled Tickets ────────────────────────────────────────
+print("Running auto-sweep on aged/stalled tickets...")
+sweep_aged_actions   = []   # list of dicts describing what was done
+sweep_sp_actions     = []
+
+for t in top_aged:
+    if t["in_status_days"] < AGED_STUCK_THRESHOLD:
+        continue                       # not stuck enough yet
+    if t["already_swept"]:
+        sweep_aged_actions.append({
+            "key": t["key"], "assignee": t["assignee"],
+            "in_status_days": t["in_status_days"],
+            "action": "SKIPPED (already swept)"
+        })
+        continue
+
+    actions_done = []
+    # 1. Add Baishali as watcher (CC)
+    ok_watch = add_watcher(t["key"], BAISHALI_ID)
+    actions_done.append(f"watcher={'✅' if ok_watch else '❌'}")
+
+    # 2. Post aged comment
+    ok_comment = post_aged_comment(
+        t["key"], t["status"], t["in_status_days"], t["last_touch_days"] or 0
+    )
+    actions_done.append(f"comment={'✅' if ok_comment else '❌'}")
+
+    sweep_aged_actions.append({
+        "key": t["key"], "assignee": t["assignee"],
+        "in_status_days": t["in_status_days"],
+        "action": ", ".join(actions_done)
+    })
+
+# ── Auto-Sweep: Missing Story Points ──────────────────────────────────────────
+# Always re-post if SP is still missing — this is an intentional weekly nudge.
+# We check the actual story points field value (not comment history) to decide.
+print(f"Checking {len(missing_sp_tickets)} tickets for missing story points...")
+for t in missing_sp_tickets:
+    # t["points"] == 0 / falsy means SP is genuinely still unset — always remind
+    ok = post_missing_sp_comment(t["key"], t["assignee_id"], t["assignee"])
+    sweep_sp_actions.append({
+        "key": t["key"], "assignee": t["assignee"],
+        "action": f"comment={'✅' if ok else '❌'}"
+    })
 
 # ── Report Generation ──────────────────────────────────────────────────────────
 report_date = now.strftime("%Y-%m-%d %H:%M UTC")
@@ -228,7 +380,7 @@ for name, s in sorted(stats.items(), key=lambda x: -x[1]["total"]):
     if name == "Unassigned":
         continue
     completion_rate = round(100 * s["done"] / s["total"]) if s["total"] else 0
-    pts_done = int(s["points_done"])
+    pts_done  = int(s["points_done"])
     pts_total = int(s["points_total"])
 
     status_str = ", ".join(f"{k}:{v}" for k, v in sorted(s["statuses"].items()))
@@ -270,8 +422,9 @@ W("═" * 66)
 
 for t in top_aged:
     comment_age = f"{t['last_comment_days']}d ago" if t["last_comment_days"] is not None else "never"
+    swept_flag  = "  🤖 [swept]" if not t["already_swept"] and t["in_status_days"] >= AGED_STUCK_THRESHOLD else ""
     W(f"""
-  🕐 {t['key']}  [{t['status']}]  — Age: {t['age_days']}d | In status: {t['in_status_days']}d | Last touched: {t['last_touch_days']}d ago
+  🕐 {t['key']}  [{t['status']}]{swept_flag}  — Age: {t['age_days']}d | In status: {t['in_status_days']}d | Last touched: {t['last_touch_days']}d ago
      Assignee : {t['assignee']}
      Summary  : {t['summary']}
      Points   : {int(t['points']) if t['points'] else '?'}
@@ -279,6 +432,25 @@ for t in top_aged:
        \"{t['last_comment_text']}\"
 """)
 
+W("═" * 66)
+W("  AUTO-SWEEP ACTIONS")
+W("═" * 66)
+
+W(f"\n  🕐 Aged/Stalled Tickets  (threshold: {AGED_STUCK_THRESHOLD}+ days in same status)")
+if sweep_aged_actions:
+    for a in sweep_aged_actions:
+        W(f"    {a['key']}  [{a['in_status_days']}d stuck]  {a['assignee']}  →  {a['action']}")
+else:
+    W("    None — no tickets crossed the stuck threshold.")
+
+W(f"\n  📊 Missing Story Points")
+if sweep_sp_actions:
+    for a in sweep_sp_actions:
+        W(f"    {a['key']}  {a['assignee']}  →  {a['action']}")
+else:
+    W("    None — all active tickets have story points set.")
+
+W("")
 W("═" * 66)
 W(f"  Report complete — {report_date}")
 W("═" * 66)
