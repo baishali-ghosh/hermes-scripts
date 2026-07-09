@@ -248,6 +248,11 @@ now = datetime.now(timezone.utc)
 for issue in all_issues:
     f = issue["fields"]
     key           = issue["key"]
+
+    # Skip tickets not in the ENGCE project — sprint may include SW, MST, etc.
+    if not key.startswith(f"{PROJECT_KEY}-"):
+        continue
+
     assignee_obj  = f.get("assignee") or {}
     assignee      = assignee_obj.get("displayName", "Unassigned")
     assignee_id   = assignee_obj.get("accountId", "")
