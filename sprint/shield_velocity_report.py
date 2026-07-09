@@ -258,7 +258,8 @@ for issue in all_issues:
     assignee_id   = assignee_obj.get("accountId", "")
     status        = f["status"]["name"]
     summary       = f.get("summary", "")[:80]
-    points        = f.get("customfield_10016") or 0  # story points
+    sp_raw        = f.get("customfield_10016")         # None = field not set in Jira
+    points        = sp_raw or 0                        # coerced for arithmetic
     created       = parse_date(f.get("created"))
     updated       = parse_date(f.get("updated"))
     age_days      = days_ago(created)
@@ -296,8 +297,8 @@ for issue in all_issues:
             "points": points
         })
 
-    # Track missing story points: not done, no points set, has an assignee
-    if status not in DONE_STATUSES and not points and assignee != "Unassigned" and assignee_id:
+    # Track missing story points: not done, SP field genuinely unset (None), has an assignee
+    if status not in DONE_STATUSES and sp_raw is None and assignee != "Unassigned" and assignee_id:
         missing_sp_tickets.append({
             "key": key,
             "assignee": assignee,
