@@ -40,6 +40,7 @@ BAISHALI_ID  = "61289a45fc550900711d5544"   # Baishali's Jira account ID (CC / w
 
 # Aged-ticket auto-sweep thresholds
 AGED_STUCK_THRESHOLD = 5    # days stuck in the same status before we flag + sweep
+DONE_ACTUAL_SP_WINDOW_DAYS = 24  # days since Done transition to back-fill actual SP
 
 # Statuses considered "completed"
 DONE_STATUSES   = {"Done", "Closed", "Resolved", "Merged"}
@@ -82,6 +83,19 @@ def days_in_status(changelog_histories, current_status):
         if last_transition:
             break
     return days_ago(last_transition)
+
+def transitioned_to_done_within(changelog_histories, done_statuses, threshold_days):
+    """Return (True, transition_dt) if the issue was moved to a done status within
+    threshold_days. Looks at the most recent Done transition only."""
+    now = datetime.now(timezone.utc)
+    for h in sorted(changelog_histories, key=lambda x: x["created"], reverse=True):
+        for item in h["items"]:
+            if item["field"] == "status" and item["toString"] in done_statuses:
+                dt = parse_date(h["created"])
+                if dt and (now - dt).days <= threshold_days:
+                    return True, dt
+                return False, None   # most recent Done transition is too old
+    return False, None
 
 def extract_comment_text(body):
     """Extract plain text from an Atlassian Document Format comment body."""
@@ -189,6 +203,50 @@ def post_missing_sp_comment(issue_key, assignee_id, assignee_name):
     ]
     return post_comment_adf(issue_key, paragraphs)
 
+def set_actual_sp(issue_key, value):
+    """Set customfield_12629 (Actual Story Points) on an issue. Returns True on success."""
+    try:
+        r = requests.put(
+            f"{JIRA_BASE}/rest/api/3/issue/{issue_key}",
+            auth=auth,
+            headers={**headers, "Content-Type": "application/json"},
+            json={"fields": {"customfield_12629": float(value)}},
+            timeout=15
+        )
+        return r.status_code in (200, 204)
+    except Exception:
+        return False
+
+def post_actual_sp_done_comment(issue_key, assignee_id, assignee_name, estimated_sp, actual_set_to):
+    """Post a comment on a Done ticket where Actual Story Points were missing.
+    actual_set_to is the value we wrote (=estimated_sp), or None if no estimate existed.
+    """
+    if actual_set_to is not None:
+        delta = actual_set_to - estimated_sp   # always 0 when defaulting actual=estimated
+        delta_str = f"+{delta:.1f}" if delta >= 0 else f"{delta:.1f}"
+        body_text = (
+            f"✅ This ticket was closed without Actual Story Points set. "
+            f"Estimated SP: {estimated_sp:.1f}. "
+            f"Actual SP has been defaulted to {actual_set_to:.1f} (delta from estimated: {delta_str}). "
+            f"Please update if actual effort differed."
+        )
+    else:
+        body_text = (
+            "✅ This ticket was closed without Actual Story Points set, "
+            "and no Estimated Story Points were found either. "
+            "Please fill in the Actual Story Points field to reflect actual effort."
+        )
+    paragraphs = [
+        [
+            {"type": "mention", "attrs": {"id": assignee_id, "text": f"@{assignee_name}"}},
+            {"type": "text", "text": f" {body_text}"},
+        ],
+        [
+            {"type": "text", "text": "— Auto sweep by Claude"},
+        ],
+    ]
+    return post_comment_adf(issue_key, paragraphs)
+
 # ── Fetch Active Sprint ────────────────────────────────────────────────────────
 print("Fetching active sprint...")
 sprint_data = get(f"{JIRA_BASE}/rest/agile/1.0/board/{BOARD_ID}/sprint",
@@ -221,7 +279,7 @@ while True:
         params={
             "startAt": start,
             "maxResults": 50,
-            "fields": "summary,status,assignee,story_points,customfield_10016,created,updated,priority,issuetype,changelog",
+            "fields": "summary,status,assignee,story_points,customfield_10016,customfield_12629,created,updated,priority,issuetype,changelog",
             "expand": "changelog"
         }
     )
@@ -241,13 +299,31 @@ stats = defaultdict(lambda: {
 })
 
 aged_candidates  = []   # tickets not done, age > 7 days
-missing_sp_tickets = [] # non-done tickets with no story points
+missing_sp_tickets = [] # non-done tickets with no story points (ENGCE only)
+done_no_actual_sp  = [] # ALL-project tickets: Done in last 24d, actual SP not set
 
 now = datetime.now(timezone.utc)
 
 for issue in all_issues:
     f = issue["fields"]
     key           = issue["key"]
+
+    # ── Done-ticket actual-SP sweep (ALL projects in sprint) ──────────────────
+    actual_sp_raw = f.get("customfield_12629")
+    if actual_sp_raw is None and f["status"]["name"] in DONE_STATUSES:
+        histories = issue.get("changelog", {}).get("histories", [])
+        moved, _  = transitioned_to_done_within(histories, DONE_STATUSES, DONE_ACTUAL_SP_WINDOW_DAYS)
+        if moved:
+            a_obj = f.get("assignee") or {}
+            done_no_actual_sp.append({
+                "key":          key,
+                "assignee":     a_obj.get("displayName", "Unassigned"),
+                "assignee_id":  a_obj.get("accountId", ""),
+                "estimated_sp": f.get("customfield_10016"),   # may be None
+                "status":       f["status"]["name"],
+                "summary":      f.get("summary", "")[:80],
+            })
+    # ──────────────────────────────────────────────────────────────────────────
 
     # Skip tickets not in the ENGCE project — sprint may include SW, MST, etc.
     if not key.startswith(f"{PROJECT_KEY}-"):
@@ -358,11 +434,45 @@ for t in top_aged:
 # We check the actual story points field value (not comment history) to decide.
 print(f"Checking {len(missing_sp_tickets)} tickets for missing story points...")
 for t in missing_sp_tickets:
-    # t["points"] == 0 / falsy means SP is genuinely still unset — always remind
+    # sp_raw is None means SP is genuinely still unset — always remind
     ok = post_missing_sp_comment(t["key"], t["assignee_id"], t["assignee"])
     sweep_sp_actions.append({
         "key": t["key"], "assignee": t["assignee"],
         "action": f"comment={'✅' if ok else '❌'}"
+    })
+
+# ── Auto-Sweep: Done Tickets Missing Actual Story Points (ALL projects) ────────
+print(f"Checking {len(done_no_actual_sp)} done tickets for missing actual story points...")
+sweep_done_actual_sp_actions = []
+for t in done_no_actual_sp:
+    if not t["assignee_id"]:
+        continue
+    # Dedup: skip if already swept
+    _, _, _, already_swept = get_last_comment(t["key"])
+    if already_swept:
+        sweep_done_actual_sp_actions.append({
+            "key": t["key"], "assignee": t["assignee"],
+            "action": "SKIPPED (already swept)"
+        })
+        continue
+
+    estimated = t["estimated_sp"]
+    if estimated is not None:
+        ok_set = set_actual_sp(t["key"], estimated)
+        actual_set_to = estimated if ok_set else None
+    else:
+        ok_set = False
+        actual_set_to = None
+
+    ok_comment = post_actual_sp_done_comment(
+        t["key"], t["assignee_id"], t["assignee"], estimated, actual_set_to
+    )
+    sweep_done_actual_sp_actions.append({
+        "key":           t["key"],
+        "assignee":      t["assignee"],
+        "estimated_sp":  estimated,
+        "actual_set_to": actual_set_to,
+        "action":        f"sp_set={'✅' if ok_set else '❌ (no estimate)'}, comment={'✅' if ok_comment else '❌'}"
     })
 
 # ── Report Generation ──────────────────────────────────────────────────────────
@@ -455,6 +565,15 @@ if sweep_sp_actions:
         W(f"    {a['key']}  {a['assignee']}  →  {a['action']}")
 else:
     W("    None — all active tickets have story points set.")
+
+W(f"\n  ✅ Done Tickets — Actual SP Back-filled  (window: last {DONE_ACTUAL_SP_WINDOW_DAYS}d, all projects)")
+if sweep_done_actual_sp_actions:
+    for a in sweep_done_actual_sp_actions:
+        est  = f"{a['estimated_sp']:.1f}" if a.get("estimated_sp") is not None else "—"
+        act  = f"{a['actual_set_to']:.1f}" if a.get("actual_set_to") is not None else "—"
+        W(f"    {a['key']}  {a['assignee']}  estimated={est}  actual_set={act}  →  {a['action']}")
+else:
+    W("    None — all recently-done tickets have Actual Story Points set.")
 
 W("")
 W("═" * 66)
