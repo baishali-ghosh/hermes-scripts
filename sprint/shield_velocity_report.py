@@ -43,9 +43,11 @@ AGED_STUCK_THRESHOLD = 5    # days stuck in the same status before we flag + swe
 DONE_ACTUAL_SP_WINDOW_DAYS = 24  # days since Done transition to back-fill actual SP
 
 # Statuses considered "completed"
-DONE_STATUSES   = {"Done", "Closed", "Resolved", "Merged"}
-ACTIVE_STATUSES = {"In Progress", "PR Review"}
-BLOCKED_STATUSES = {"Pending", "Open", "To Do"}
+DONE_STATUSES     = {"Done", "Closed", "Resolved", "Merged", "Rejected"}
+ACTIVE_STATUSES   = {"In Progress", "PR Review"}
+BLOCKED_STATUSES  = {"Pending", "Open", "To Do"}
+# Excluded from SP total (Pending tickets are not yet committed work)
+PENDING_STATUSES  = {"Pending"}
 
 auth    = (JIRA_USER, JIRA_TOKEN)
 headers = {"Accept": "application/json"}
@@ -279,7 +281,7 @@ while True:
         params={
             "startAt": start,
             "maxResults": 50,
-            "fields": "summary,status,assignee,story_points,customfield_10016,customfield_12629,created,updated,priority,issuetype,changelog",
+            "fields": "summary,status,assignee,customfield_10004,customfield_12629,created,updated,priority,issuetype,changelog",
             "expand": "changelog"
         }
     )
@@ -319,7 +321,7 @@ for issue in all_issues:
                 "key":          key,
                 "assignee":     a_obj.get("displayName", "Unassigned"),
                 "assignee_id":  a_obj.get("accountId", ""),
-                "estimated_sp": f.get("customfield_10016"),   # may be None
+                "estimated_sp": f.get("customfield_10004"),   # Story Points
                 "status":       f["status"]["name"],
                 "summary":      f.get("summary", "")[:80],
             })
@@ -334,8 +336,8 @@ for issue in all_issues:
     assignee_id   = assignee_obj.get("accountId", "")
     status        = f["status"]["name"]
     summary       = f.get("summary", "")[:80]
-    sp_raw        = f.get("customfield_10016")         # None = field not set in Jira
-    points        = sp_raw or 0                        # coerced for arithmetic
+    sp_raw        = f.get("customfield_10004")          # Story Points (ENGCE board uses cf_10004)
+    points        = sp_raw or 0                         # coerced for arithmetic
     created       = parse_date(f.get("created"))
     updated       = parse_date(f.get("updated"))
     age_days      = days_ago(created)
@@ -347,7 +349,9 @@ for issue in all_issues:
 
     s = stats[assignee]
     s["total"] += 1
-    s["points_total"] += points
+    # Exclude Pending from SP total — Pending = not yet committed work
+    if status not in PENDING_STATUSES:
+        s["points_total"] += points
     s["statuses"][status] += 1
     s["issues"].append(key)
 
@@ -496,14 +500,15 @@ for name, s in sorted(stats.items(), key=lambda x: -x[1]["total"]):
     if name == "Unassigned":
         continue
     completion_rate = round(100 * s["done"] / s["total"]) if s["total"] else 0
-    pts_done  = int(s["points_done"])
-    pts_total = int(s["points_total"])
+    pts_done     = int(s["points_done"])
+    pts_total    = int(s["points_total"])
+    pts_not_done = pts_total - pts_done
 
     status_str = ", ".join(f"{k}:{v}" for k, v in sorted(s["statuses"].items()))
 
     W(f"\n  ▸ {name}")
     W(f"    Issues   : {s['total']} total | {s['done']} done | {s['active']} active | {s['blocked']} blocked/open")
-    W(f"    Points   : {pts_done}/{pts_total} completed ({completion_rate}% done rate)")
+    W(f"    Points   : Total={pts_total} | Completed={pts_done} | Not Done={pts_not_done}  ({completion_rate}% done rate)")
     W(f"    Statuses : {status_str}")
 
 # Unassigned
@@ -522,13 +527,14 @@ W("═" * 66)
 total_done   = sum(s["done"] for s in stats.values())
 total_active = sum(s["active"] for s in stats.values())
 total_open   = sum(s["blocked"] for s in stats.values())
-total_pts_done  = int(sum(s["points_done"] for s in stats.values()))
-total_pts_total = int(sum(s["points_total"] for s in stats.values()))
+total_pts_done     = int(sum(s["points_done"] for s in stats.values()))
+total_pts_total    = int(sum(s["points_total"] for s in stats.values()))
+total_pts_not_done = total_pts_total - total_pts_done
 
 W(f"\n  Issues Done      : {total_done} / {len(all_issues)}")
 W(f"  In Progress      : {total_active}")
 W(f"  Blocked / Open   : {total_open}")
-W(f"  Story Points Done: {total_pts_done} / {total_pts_total}")
+W(f"  Story Points     : Total={total_pts_total} | Completed={total_pts_done} | Not Done={total_pts_not_done}")
 W(f"  Sprint Completion: {round(100*total_done/len(all_issues))}%")
 
 W("")
