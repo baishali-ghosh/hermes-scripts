@@ -23,6 +23,7 @@ LLM setup:
 import os, sys, json, time, re, requests, keyring
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
+from maestro_flow_investigator import investigate_and_file
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 load_dotenv(r"C:\Users\Baishali.Ghosh\AppData\Local\hermes\.env")
@@ -683,12 +684,47 @@ def main():
         cc = ", ".join(f"<@{uid}>" for uid in shield_mentioned)
         draft_with_cc = f"{draft}\n\n_cc: {cc}_"
 
+        # ── Claude Code investigation (Shield-owned only) ──────────────────
+        thread_url   = ts_to_url(CHANNEL_ID, ts)
+        investigation = {}
+        if owner == "Shield":
+            print(f"  [Investigator] Shield-owned — spawning Claude Code investigation...")
+            investigation = investigate_and_file(
+                thread_text  = thread_text,
+                reporter     = reporter_name,
+                reasoning    = reasoning,
+                routing_hint = reasoning,   # LLM reasoning carries the routing path
+                thread_url   = thread_url,
+            )
+
         # ── Build Slack DM approval message ───────────────────────────────────
-        thread_url  = ts_to_url(CHANNEL_ID, ts)
         dt_str      = datetime.fromtimestamp(float(ts), tz=timezone.utc).strftime("%b %d %H:%M UTC")
         preview     = re.sub(r"<[^>]+>", "", text).strip()[:280]
         owner_emoji = {"Shield": "🔵", "Flow": "🟢", "Shared": "🟡"}.get(owner, "⚪")
         mentioned_names = [SHIELD_ID_TO_NAME.get(uid, uid) for uid in shield_mentioned]
+
+        # Investigation block (appended only when Shield + investigated)
+        investigation_block = ""
+        if investigation.get("investigated"):
+            inv_summary = investigation.get("summary", "")
+            if investigation.get("fix_found"):
+                jira_key = investigation.get("jira_key", "")
+                jira_url = investigation.get("jira_url", "")
+                fix_desc = investigation.get("fix_description", "")[:300]
+                files    = ", ".join(investigation.get("files", [])[:3])
+                jira_ref = f"🎫 *Jira:* <{jira_url}|{jira_key}>" if jira_key else "🎫 Jira ticket creation failed — create manually."
+                investigation_block = (
+                    f"\n\n🔬 *Investigation result:* Fix found!\n"
+                    f"_{inv_summary}_\n\n"
+                    f"*Suggested fix:* {fix_desc}\n"
+                    f"*Files:* `{files}`\n"
+                    f"{jira_ref}"
+                )
+            else:
+                investigation_block = (
+                    f"\n\n🔬 *Investigation result:* No fix found.\n"
+                    f"_{inv_summary}_"
+                )
 
         dm_msg = (
             f"🔔 *#help-maestro-flow triage*\n\n"
@@ -698,7 +734,8 @@ def main():
             f"{owner_emoji} *{owner} team* ({confidence} confidence)\n"
             f"_{reasoning}_\n\n"
             f"*Shield members mentioned:* {', '.join(mentioned_names)}\n\n"
-            f"*Draft reply:*\n```\n{draft_with_cc}\n```\n\n"
+            f"*Draft reply:*\n```\n{draft_with_cc}\n```"
+            f"{investigation_block}\n\n"
             f"Reply `post` to send · `post: <text>` to edit · `skip` to discard\n"
             f"_(ref: {ts})_"
         )
@@ -717,6 +754,7 @@ def main():
                 "mentioned_ids":  list(shield_mentioned),
                 "created_at":     now_ts,
                 "classified_by":  "llm" if _get_hermes_anthropic_token()[0] else "rules",
+                "investigation":  investigation,
             }
             new_items += 1
             print(f"  queued: {ts} | {owner} ({confidence}) | {reporter_name}")
