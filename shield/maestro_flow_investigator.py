@@ -35,6 +35,7 @@ REPO_ROOTS = {
     "IntegrationServiceActivities": r"C:\Users\Baishali.Ghosh\source\repos\UiPath\IntegrationServiceActivities",
     "StudioWeb":                    r"C:\Users\Baishali.Ghosh\source\repos\UiPath\StudioWeb",
     "API-Workflow":                 r"C:\Users\Baishali.Ghosh\source\repos\UiPath\udon",
+    "flow-workbench":               r"C:\Users\Baishali.Ghosh\source\repos\UiPath\flow-workbench",
 }
 
 # Timeout for Claude Code investigation (seconds) — codebase search takes 60-90s
@@ -167,15 +168,42 @@ def _pick_workdir(routing: str) -> str:
     """
     Choose the best local repo root for Claude Code to work in,
     based on the routing path identified by the triage classifier.
-    Falls back to ISA if uncertain.
+
+    Routing priority:
+    - Flow canvas / adapter / DAP renderer / VSCode extension → flow-workbench
+      (owns: properties-panel/dap/, adapter/, widgetRegistry, flow-core manifest,
+       services/mfe, vsix MFE — the TypeScript rendering layer)
+    - StudioWeb MFE / Case Mgmt / Process Mon / API Workflows host → StudioWeb
+    - API-Workflow runtime / udon / Java executor → API-Workflow
+    - DAP engine / connector metadata / IS design-time (.NET) → ISA (default)
     """
     r = routing.lower()
-    if "studioweb" in r or "mfe" in r or "case" in r or "process" in r or "api workflow" in r:
+
+    # Flow canvas / adapter / DAP renderer — TypeScript in flow-workbench
+    # Check StudioWeb-specific terms first so they don't fall into this branch
+    if any(k in r for k in ("flow-workbench", "canvas", "adapter",
+                             "flow team", "vsix", "vscode", "dap-value", "widgetregistry",
+                             "fieldcontrol", "dapfield", "mfe host", "integrationservicedap")) \
+       and not any(k in r for k in ("studioweb", "widget-dispatcher", "case mgmt",
+                                     "case management", "process mon", "api workflow")):
+        d = REPO_ROOTS["flow-workbench"]
+
+    # StudioWeb MFE path — Angular connector-activity panel
+    elif any(k in r for k in ("studioweb", "case mgmt", "case management",
+                               "process mon", "api workflow", "widget-dispatcher",
+                               "properties-and-widgets", "connector-activity angular")):
         d = REPO_ROOTS["StudioWeb"]
-    elif "api-workflow" in r or "udon" in r or "runtime" in r:
+
+    # IS TypeScript runtime (udon / api-workflow-commons)
+    elif any(k in r for k in ("api-workflow", "udon", "java", "executor",
+                               "runtime", "api workflow runtime")):
         d = REPO_ROOTS["API-Workflow"]
+
+    # Default: IS .NET design-time / DAP engine / connector metadata
     else:
-        d = REPO_ROOTS["IntegrationServiceActivities"]  # default for DAP/connector work
+        d = REPO_ROOTS["IntegrationServiceActivities"]
+
+    # Fallback to ISA if chosen dir doesn't exist locally
     return d if os.path.isdir(d) else REPO_ROOTS["IntegrationServiceActivities"]
 
 
