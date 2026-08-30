@@ -28,10 +28,12 @@ from dotenv import load_dotenv
 load_dotenv(r"C:\Users\Baishali.Ghosh\AppData\Local\hermes\.env")
 
 SLACK_TOKEN = keyring.get_password("hermes", "SLACK_BOT_TOKEN")
-TG_TOKEN    = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TG_CHAT_ID  = "8588389643"   # Baishali's private DM
 
 AUTH_JSON   = r"C:\Users\Baishali.Ghosh\AppData\Local\hermes\auth.json"
+
+# Baishali's Slack user ID — DM approval goes here
+BAISHALI_SLACK_ID = "U02D905FG7J"
+_slack_dm_channel_cache: str = ""
 
 
 def _get_hermes_anthropic_token() -> tuple[str, str]:
@@ -383,20 +385,54 @@ def ts_to_url(channel_id, ts):
     return f"https://uipath.enterprise.slack.com/archives/{channel_id}/p{ts.replace('.', '')}"
 
 
-# ── Telegram helpers ──────────────────────────────────────────────────────────
-def tg_send(text, parse_mode="Markdown"):
-    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    payload = {"chat_id": TG_CHAT_ID, "text": text, "parse_mode": parse_mode,
-               "disable_web_page_preview": True}
+# ── Slack DM helpers (approval channel) ───────────────────────────────────────
+def slack_open_dm() -> str:
+    """Open (or retrieve cached) Baishali's Slack DM channel. Returns channel ID."""
+    global _slack_dm_channel_cache
+    if _slack_dm_channel_cache:
+        return _slack_dm_channel_cache
+    data = slack_get_post("conversations.open", {"users": BAISHALI_SLACK_ID})
+    if data.get("ok"):
+        _slack_dm_channel_cache = data["channel"]["id"]
+    else:
+        print(f"  [DM] conversations.open failed: {data.get('error')}")
+    return _slack_dm_channel_cache
+
+
+def slack_get_post(endpoint: str, payload: dict) -> dict:
+    """POST to a Slack API endpoint (used for conversations.open etc.)."""
     try:
-        r = requests.post(url, json=payload, timeout=10)
-        d = r.json()
-        if d.get("ok"):
-            return d["result"]["message_id"]
-        print(f"  TG send error: {d.get('error_code')} {d.get('description')}")
+        r = requests.post(
+            f"https://slack.com/api/{endpoint}",
+            headers={**SLACK_HEADERS, "Content-Type": "application/json"},
+            json=payload,
+            timeout=15,
+        )
+        return r.json()
     except Exception as e:
-        print(f"  TG send failed: {e}")
-    return None
+        print(f"  [slack_post] {endpoint} failed: {e}")
+        return {}
+
+
+def slack_dm_post(text: str) -> str:
+    """
+    Post a message to Baishali's Slack DM.
+    Returns the message ts (used as approval anchor), or '' on failure.
+    """
+    dm_channel = slack_open_dm()
+    if not dm_channel:
+        print("  [DM] No DM channel — cannot send approval request.")
+        return ""
+    data = slack_get_post("chat.postMessage", {
+        "channel": dm_channel,
+        "text":    text,
+        "mrkdwn":  True,
+    })
+    if data.get("ok"):
+        return data["ts"]
+    print(f"  [DM] chat.postMessage failed: {data.get('error')}")
+    return ""
+
 
 
 # ── State management ──────────────────────────────────────────────────────────
@@ -549,14 +585,14 @@ def main():
         cc = ", ".join(f"<@{uid}>" for uid in shield_mentioned)
         draft_with_cc = f"{draft}\n\n_cc: {cc}_"
 
-        # ── Build Telegram approval message ───────────────────────────────────
+        # ── Build Slack DM approval message ───────────────────────────────────
         thread_url  = ts_to_url(CHANNEL_ID, ts)
         dt_str      = datetime.fromtimestamp(float(ts), tz=timezone.utc).strftime("%b %d %H:%M UTC")
         preview     = re.sub(r"<[^>]+>", "", text).strip()[:280]
         owner_emoji = {"Shield": "🔵", "Flow": "🟢", "Shared": "🟡"}.get(owner, "⚪")
         mentioned_names = [SHIELD_ID_TO_NAME.get(uid, uid) for uid in shield_mentioned]
 
-        tg_msg = (
+        dm_msg = (
             f"🔔 *#help-maestro-flow triage*\n\n"
             f"📅 {dt_str} | 👤 {reporter_name}\n"
             f"🔗 {thread_url}\n\n"
@@ -569,9 +605,9 @@ def main():
             f"_(ref: {ts})_"
         )
 
-        tg_msg_id = tg_send(tg_msg)
+        dm_ts = slack_dm_post(dm_msg)
 
-        if tg_msg_id:
+        if dm_ts:
             pending[ts] = {
                 "channel_id":     CHANNEL_ID,
                 "thread_ts":      ts,
@@ -579,7 +615,7 @@ def main():
                 "draft":          draft_with_cc,
                 "classification": {"owner": owner, "confidence": confidence},
                 "reporter":       reporter_name,
-                "tg_msg_id":      tg_msg_id,
+                "dm_ts":          dm_ts,
                 "mentioned_ids":  list(shield_mentioned),
                 "created_at":     now_ts,
                 "classified_by":  "llm" if _get_hermes_anthropic_token()[0] else "rules",
@@ -587,7 +623,7 @@ def main():
             new_items += 1
             print(f"  queued: {ts} | {owner} ({confidence}) | {reporter_name}")
         else:
-            print(f"  TG send failed for {ts} — marking seen")
+            print(f"  Slack DM send failed for {ts} — marking seen")
 
         seen_ts.add(ts)
         time.sleep(1)
