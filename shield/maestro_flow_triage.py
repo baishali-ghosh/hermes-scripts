@@ -4,7 +4,7 @@ maestro_flow_triage.py
 Scans #help-maestro-flow for new messages/threads that @mention Shield team members.
 For each unprocessed mention:
   1. Fetches the full thread context
-  2. Uses a LangChain LLM agent to classify ownership (Shield IS vs Flow team)
+  2. Uses Claude (via Hermes OAuth token) to classify ownership (Shield IS vs Flow team)
      and draft a contextual Slack reply — grounded in CODEOWNERS
   3. Sends the draft to Baishali via Telegram DM for approval
   4. Saves pending state so maestro_flow_approval_poster.py can post on approval
@@ -15,24 +15,70 @@ Approval commands (reply in Telegram to the draft message):
   "skip"          → discard
 
 LLM setup:
-  Requires ANTHROPIC_API_KEY in keyring:
-    py -c "import keyring; keyring.set_password('hermes', 'ANTHROPIC_API_KEY', 'sk-ant-...')"
+  Uses the active Hermes OAuth token from auth.json (claude_code credential).
+  Falls back to rule-based classifier if no valid token is found.
   Model: claude-haiku-4-5 (fast + cheap for triage)
 """
 
 import os, sys, json, time, re, requests, keyring
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
-from typing import Literal
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 load_dotenv(r"C:\Users\Baishali.Ghosh\AppData\Local\hermes\.env")
 
-SLACK_TOKEN      = keyring.get_password("hermes", "SLACK_BOT_TOKEN")
-TG_TOKEN         = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-ANTHROPIC_API_KEY = keyring.get_password("hermes", "ANTHROPIC_API_KEY") or \
-                    os.environ.get("ANTHROPIC_API_KEY", "")
-TG_CHAT_ID       = "8588389643"   # Baishali's private DM
+SLACK_TOKEN = keyring.get_password("hermes", "SLACK_BOT_TOKEN")
+TG_TOKEN    = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TG_CHAT_ID  = "8588389643"   # Baishali's private DM
+
+AUTH_JSON   = r"C:\Users\Baishali.Ghosh\AppData\Local\hermes\auth.json"
+
+
+def _get_hermes_anthropic_token() -> tuple[str, str]:
+    """
+    Reads the active Anthropic credential — in priority order:
+    1. Raw ANTHROPIC_API_KEY in keyring or env (legacy sk-ant-... key)
+    2. Claude Code OAuth token from ~/.claude/.credentials.json (claude_code source)
+    3. auth.json access_token with last_status=ok
+    Returns (token, base_url).
+    """
+    ANTHROPIC_BASE = "https://api.anthropic.com"
+
+    # 1. Legacy raw key
+    raw = keyring.get_password("hermes", "ANTHROPIC_API_KEY") or \
+          os.environ.get("ANTHROPIC_API_KEY", "")
+    if raw:
+        return raw, ANTHROPIC_BASE
+
+    # 2. Claude Code credentials (preferred — always fresh from claude_code auth)
+    claude_creds = os.path.expanduser(r"~/.claude/.credentials.json")
+    try:
+        with open(claude_creds) as f:
+            cc = json.load(f)
+        oauth = cc.get("claudeAiOauth", {})
+        token = oauth.get("accessToken", "")
+        expires = oauth.get("expiresAt", 0)
+        import time as _t
+        if token and expires > _t.time() * 1000:
+            return token, ANTHROPIC_BASE
+    except Exception as e:
+        print(f"  [auth] claude credentials.json read error: {e}")
+
+    # 3. auth.json fallback
+    try:
+        with open(AUTH_JSON) as f:
+            auth = json.load(f)
+        pool = auth.get("credential_pool", {})
+        for cred in sorted(pool.get("anthropic", []),
+                           key=lambda c: (0 if c.get("last_status") == "ok" else 1,
+                                          c.get("priority", 99))):
+            token = cred.get("access_token", "")
+            if token and cred.get("last_status") == "ok":
+                return token, cred.get("base_url", ANTHROPIC_BASE)
+    except Exception as e:
+        print(f"  [auth] auth.json read error: {e}")
+
+    return "", ANTHROPIC_BASE
 
 # ── Config ────────────────────────────────────────────────────────────────────
 CHANNEL_ID       = "C0AE5U60686"   # #help-maestro-flow
@@ -135,27 +181,18 @@ Respond with a JSON object (no markdown, no preamble):
 
 def classify_with_llm(thread_text: str, reporter_name: str) -> dict:
     """
-    Call Claude via LangChain to classify ownership and draft a reply.
+    Call Claude directly via Anthropic REST API (using Hermes OAuth token).
     Returns dict with keys: owner, confidence, reasoning, draft_reply.
     Falls back to rule-based classification if LLM unavailable.
     """
-    if not ANTHROPIC_API_KEY:
-        print("  [LLM] No ANTHROPIC_API_KEY — using rule-based fallback")
+    token, base_url = _get_hermes_anthropic_token()
+    if not token:
+        print("  [LLM] No Anthropic token found — using rule-based fallback")
         return _classify_fallback(thread_text)
 
     try:
-        from langchain_anthropic import ChatAnthropic
-        from langchain_core.messages import HumanMessage, SystemMessage
-
         codeowners_ctx = _load_codeowners_context()
         system_prompt  = _build_system_prompt(codeowners_ctx)
-
-        llm = ChatAnthropic(
-            model="claude-haiku-4-5",
-            api_key=ANTHROPIC_API_KEY,
-            temperature=0,
-            max_tokens=512,
-        )
 
         user_msg = f"""Reporter: {reporter_name}
 
@@ -164,12 +201,41 @@ Thread content:
 
 Classify ownership and draft the reply."""
 
-        response = llm.invoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_msg),
-        ])
+        # OAuth tokens use Bearer auth + claude-code betas;
+        # raw sk-ant-api* keys use x-api-key header.
+        is_oauth = not token.startswith("sk-ant-api")
+        if is_oauth:
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "anthropic-version": "2023-06-01",
+                "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+                "content-type": "application/json",
+                "user-agent": "claude-code/2.1.74",
+            }
+        else:
+            headers = {
+                "x-api-key": token,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }
+        payload = {
+            "model": "claude-haiku-4-5",
+            "max_tokens": 512,
+            "temperature": 0,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_msg}],
+        }
 
-        raw = response.content.strip()
+        resp = requests.post(
+            f"{base_url}/v1/messages",
+            headers=headers,
+            json=payload,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        raw = data["content"][0]["text"].strip()
         # Strip markdown code fences if present
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
@@ -184,6 +250,9 @@ Classify ownership and draft the reply."""
 
     except json.JSONDecodeError as e:
         print(f"  [LLM] JSON parse error: {e} — raw: {raw[:200]}")
+        return _classify_fallback(thread_text)
+    except requests.HTTPError as e:
+        print(f"  [LLM] HTTP {e.response.status_code}: {e.response.text[:200]} — using fallback")
         return _classify_fallback(thread_text)
     except Exception as e:
         print(f"  [LLM] Error: {e} — using rule-based fallback")
@@ -375,9 +444,10 @@ def main():
         print("ERROR: SLACK_BOT_TOKEN not found in keyring"); sys.exit(1)
     if not TG_TOKEN:
         print("ERROR: TELEGRAM_BOT_TOKEN not found in .env"); sys.exit(1)
-    if not ANTHROPIC_API_KEY:
-        print("WARNING: ANTHROPIC_API_KEY not set — will use rule-based fallback classifier")
-        print("  To enable LLM: py -c \"import keyring; keyring.set_password('hermes', 'ANTHROPIC_API_KEY', 'sk-ant-...')\"")
+    token, _ = _get_hermes_anthropic_token()
+    if not token:
+        print("WARNING: No Anthropic token found — will use rule-based fallback classifier")
+        print("  (Expected: ~/.claude/.credentials.json with valid claudeAiOauth.accessToken)")
 
     state    = load_state()
     seen_ts  = set(state.get("seen_ts", []))
@@ -442,7 +512,7 @@ def main():
             seen_ts.add(ts)
             continue
 
-        # ── LangChain classification + draft ──────────────────────────────────
+        # ── LLM classification + draft ────────────────────────────────────
         reporter_name = get_name(user) if user else "Unknown"
         thread_text   = _format_thread_for_llm(text, replies, _name_cache | SHIELD_ID_TO_NAME)
         result        = classify_with_llm(thread_text, reporter_name)
@@ -489,7 +559,7 @@ def main():
                 "tg_msg_id":      tg_msg_id,
                 "mentioned_ids":  list(shield_mentioned),
                 "created_at":     now_ts,
-                "classified_by":  "llm" if ANTHROPIC_API_KEY else "rules",
+                "classified_by":  "llm" if _get_hermes_anthropic_token()[0] else "rules",
             }
             new_items += 1
             print(f"  queued: {ts} | {owner} ({confidence}) | {reporter_name}")
@@ -503,7 +573,8 @@ def main():
     state["pending"]  = pending
     save_state(state)
 
-    mode = "LLM (Claude)" if ANTHROPIC_API_KEY else "rule-based fallback"
+    token, _ = _get_hermes_anthropic_token()
+    mode = "LLM (Claude via Hermes OAuth)" if token else "rule-based fallback"
     print(f"\nDone [{mode}]. {new_items} new item(s) queued. {len(pending)} total pending.")
 
 
