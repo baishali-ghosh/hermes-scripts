@@ -207,12 +207,92 @@ def _pick_workdir(routing: str) -> str:
     return d if os.path.isdir(d) else REPO_ROOTS["IntegrationServiceActivities"]
 
 
+# Per-repo investigation framing — tells Claude Code what kind of project it's in
+# and how to investigate effectively
+_REPO_CONTEXT = {
+    "IntegrationServiceActivities": """\
+Repo: IntegrationServiceActivities (ISA) — C#/.NET 6+8 UiPath RPA activity pack.
+This is NOT a web app. It is a UiPath Studio activity library for RPA workflows.
+Tech stack: C#, System.Activities (Windows Workflow Foundation), xunit tests.
+Key namespaces: UiPath.IntegrationService.Activities (design-time) and
+  UiPath.IntegrationService.Activities.Runtime (runtime execution).
+How to investigate:
+- Grep for C# class names, method names, interface names (.cs files)
+- Key entry points: ViewModels/ (Studio UI logic), Services/ (business logic),
+  Extensions/ConnectorObjectExtensions.cs (connector metadata helpers),
+  Builders/ (data source + JIT type builders), Factories/ (activity creation)
+- Activity pipeline: Studio UI → ViewModel → ActivityConfigurationService →
+  MetadataService → Connector API
+- For a blank/broken properties panel: look at ConnectorActivityBaseViewModel.cs,
+  ConnectorActivityViewModel.cs, InitAsync(), ShouldRenderOnCanvas()
+- For connector-specific issues: check Tests/Connectors/<connector>.json for metadata
+- DapErrorCode ranges: 1xxx runtime · 2xxx design-time · 3xxx general
+- Do NOT look for TypeScript, HTML, or npm files — this is pure C#/.NET""",
+
+    "flow-workbench": """\
+Repo: flow-workbench — TypeScript/React monorepo, Maestro Flow web canvas.
+This is the Flow team's canvas — Shield IS owns specific DAP paths within it.
+Tech stack: TypeScript, React, pnpm monorepo (packages/).
+Shield IS owned paths in this repo:
+- packages/canvas/src/components/properties-panel/dap/ — DAP activity panel + adapter
+- packages/canvas/src/components/properties-panel/http/ — HTTP toolbar
+- packages/services/src/mfe/ — MFE loader (integrationServiceDapComponent.ts)
+- packages/vsix/src/webview/mfe/ + defined-resources/ — VS Code extension MFE
+- packages/flow-core/src/manifest/mappers/connector* — connector manifest mapping
+How to investigate:
+- Grep for TypeScript/TSX files (.ts, .tsx)
+- Key dispatch point: widgetRegistry.tsx (WIDGET_RENDERERS map) → widgets/<X>Field.tsx
+- For blank panel: check DAPField.tsx, adapter/ folder, integrationServiceDapComponent.ts
+- For wrong field value: check dap-value.ts (serialization/deserialization)
+- For VS Code specific: check vsix/src/webview/ paths
+- The feature flag canvas.properties-panel.dap-package controls the pinned DAP version
+  (check packages/canvas/package.json for pinned @uipath/integration-service-dap version)""",
+
+    "StudioWeb": """\
+Repo: StudioWeb — Angular 18 SPA, MFE host for IS connector panel.
+Tech stack: TypeScript, Angular, NgRx, Module Federation.
+Shield IS owned paths:
+- src/Client/app/libs/api-workflows/lib/design-activities/is-activities/ — IS Angular components
+- src/Client/app/packages/connector-activity/ — connector activity panel (Shield owns this)
+- src/Client/app/packages/activity-properties-configuration/ — activity config host
+How to investigate:
+- Grep for .ts and .html files
+- Widget dispatch: properties-and-widgets/widget-dispatcher/widget-dispatcher.component.html
+  → widgets/<type>-widget/ Angular components
+- For loading failures: check activity-configuration.service.ts, metadata.service.ts
+- For blank panel in Maestro/Case Mgmt: check MFE lazy loading, NgRx state slices
+  under studio-web/main/features/designer/
+- For wrong field rendering: look at widget-and-variable.component.*, validation/,
+  expression-editor/ folders""",
+
+    "API-Workflow": """\
+Repo: udon (API-Workflow) — Java Maven monorepo, IS TypeScript/Node runtime.
+Tech stack: Java 17, Maven, Spring Boot, plus Node.js runtime process.
+Modules: api/, executor/, framework/ (auth, caching, element routing), core/,
+  connector families (crm/, helpdesk/, erp/, messaging/, etc.)
+How to investigate:
+- Grep for Java files (.java) and check Maven module structure
+- For runtime execution failures: look at executor/ module
+- For authentication/connection issues: framework/auth/ module
+- For connector-specific failures: look in the connector family module (e.g. crm/ for Salesforce)
+- Build: mvn -s settings.xml test
+- This repo handles API Workflow execution (the runtime side), not Studio design-time""",
+}
+
+
 def _build_investigation_prompt(thread_text: str, reporter: str,
                                  reasoning: str, routing_hint: str,
-                                 codebase_context: str = "") -> str:
+                                 codebase_context: str = "",
+                                 repo_name: str = "IntegrationServiceActivities") -> str:
+    repo_frame = _REPO_CONTEXT.get(repo_name, _REPO_CONTEXT["IntegrationServiceActivities"])
     context_block = codebase_context if codebase_context else ""
     return textwrap.dedent(f"""
-    {context_block}You are investigating a #help-maestro-flow Shield IS bug report.
+    {context_block}
+    ## Repo context
+    {repo_frame}
+
+    ## Your task
+    You are investigating a #help-maestro-flow Shield IS bug report in the repo above.
     Triage routing: {reasoning}
 
     Bug report:
@@ -240,11 +320,17 @@ def run_investigation(thread_text: str, reporter: str,
         return {"investigated": False, "fix_found": False,
                 "error": "claude binary not found in PATH"}
 
-    workdir = _pick_workdir(routing_hint)
+    workdir  = _pick_workdir(routing_hint)
+    # Derive repo name from workdir for per-repo framing
+    repo_name = next(
+        (k for k, v in REPO_ROOTS.items() if os.path.normpath(v) == os.path.normpath(workdir)),
+        "IntegrationServiceActivities"
+    )
     ctx     = _load_codebase_context(workdir)
-    prompt  = _build_investigation_prompt(thread_text, reporter, reasoning, routing_hint, ctx)
+    prompt  = _build_investigation_prompt(thread_text, reporter, reasoning,
+                                          routing_hint, ctx, repo_name)
 
-    print(f"  [Investigator] Spawning Claude Code in: {workdir}")
+    print(f"  [Investigator] Spawning Claude Code in: {repo_name} ({workdir})")
     try:
         result = subprocess.run(
             [CLAUDE_BIN, "-p", "--max-turns", "15", "--output-format", "text"],
