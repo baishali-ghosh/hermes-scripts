@@ -438,8 +438,31 @@ def _format_thread_for_llm(root_text: str, replies: list, id_to_name: dict) -> s
     return "\n".join(lines)
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+def _in_business_hours() -> bool:
+    """
+    Returns True if current time is within Mon 7:00 AM – Fri 5:00 PM IST.
+    Weekends and outside those hours return False (script skips polling).
+    """
+    IST = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(IST)
+    dow      = now.weekday()       # 0=Mon, 4=Fri, 5=Sat, 6=Sun
+    mins     = now.hour * 60 + now.minute
+
+    if dow >= 5:                   # Sat or Sun
+        return False
+    if dow == 0 and mins < 7 * 60: # Mon before 7:00 AM
+        return False
+    if dow == 4 and mins >= 17 * 60: # Fri at or after 5:00 PM
+        return False
+    return True
+
+
+
 def main():
+    if not _in_business_hours():
+        print("Outside business hours (Mon 7AM – Fri 5PM IST) — skipping poll.")
+        return
+
     if not SLACK_TOKEN:
         print("ERROR: SLACK_BOT_TOKEN not found in keyring"); sys.exit(1)
     if not TG_TOKEN:
