@@ -28,7 +28,7 @@ What I actually needed wasn't a better dashboard. I needed an agent that could d
 
 ## The architecture (it's simpler than it sounds)
 
-I use **Hermes** — a local AI orchestration layer — with a set of cron jobs wired to my actual work tools.
+I use a local AI orchestration layer with a set of cron jobs wired to my actual work tools.
 
 Here's what runs automatically, before I've had my morning chai:
 
