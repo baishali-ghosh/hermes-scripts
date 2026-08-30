@@ -132,6 +132,37 @@ def create_jira_ticket(summary: str, description: str) -> tuple[str, str]:
 
 
 # ── Claude Code investigator ───────────────────────────────────────────────────
+_CONTEXT_CAP = 3000  # max chars of AGENTS.md/CLAUDE.md injected into prompt
+
+
+def _load_codebase_context(workdir: str) -> str:
+    """
+    Read AGENTS.md (and CLAUDE.md if present) from `workdir` and return a
+    trimmed 'Codebase context' block for injection into the investigation prompt.
+    Content is capped at _CONTEXT_CAP chars to avoid blowing the prompt budget.
+    Returns an empty string if no context files exist.
+    """
+    context_parts: list[str] = []
+    for filename in ("AGENTS.md", "CLAUDE.md"):
+        path = os.path.join(workdir, filename)
+        if os.path.isfile(path):
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                context_parts.append(f"### {filename}\n{content}")
+            except Exception as e:
+                print(f"  [Investigator] Could not read {path}: {e}")
+
+    if not context_parts:
+        return ""
+
+    combined = "\n\n".join(context_parts)
+    if len(combined) > _CONTEXT_CAP:
+        combined = combined[:_CONTEXT_CAP] + "\n... [truncated]"
+
+    return f"## Codebase context\n\n{combined}\n\n---\n"
+
+
 def _pick_workdir(routing: str) -> str:
     """
     Choose the best local repo root for Claude Code to work in,
@@ -149,9 +180,11 @@ def _pick_workdir(routing: str) -> str:
 
 
 def _build_investigation_prompt(thread_text: str, reporter: str,
-                                 reasoning: str, routing_hint: str) -> str:
+                                 reasoning: str, routing_hint: str,
+                                 codebase_context: str = "") -> str:
+    context_block = codebase_context if codebase_context else ""
     return textwrap.dedent(f"""
-    You are investigating a #help-maestro-flow Shield IS bug report.
+    {context_block}You are investigating a #help-maestro-flow Shield IS bug report.
     Triage routing: {reasoning}
 
     Bug report:
@@ -180,7 +213,8 @@ def run_investigation(thread_text: str, reporter: str,
                 "error": "claude binary not found in PATH"}
 
     workdir = _pick_workdir(routing_hint)
-    prompt  = _build_investigation_prompt(thread_text, reporter, reasoning, routing_hint)
+    ctx     = _load_codebase_context(workdir)
+    prompt  = _build_investigation_prompt(thread_text, reporter, reasoning, routing_hint, ctx)
 
     print(f"  [Investigator] Spawning Claude Code in: {workdir}")
     try:
